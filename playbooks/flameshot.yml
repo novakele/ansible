@@ -1,0 +1,146 @@
+---
+- name: Baseline
+  ansible.builtin.import_playbook: baseline.yml
+
+
+- name: Configure sway screenshot prerequisites
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    target_user: "{{ lookup('env', 'USER') }}"
+    packages:
+      - pipewire
+      - pipewire-pulse
+      - wireplumber
+      - xdg-desktop-portal
+      - xdg-desktop-portal-wlr
+      - xdg-desktop-portal-gtk   # fallback for portals wlr doesn't implement
+      - grim
+      - slurp
+      - mako-notifier            # silences the "No DBus System Notification" warning
+      - dbus-user-session
+
+  tasks:
+    - name: Look up target user
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ target_user }}"
+
+    - name: Set user facts
+      ansible.builtin.set_fact:
+        user_home: "{{ getent_passwd[target_user][4] }}"
+        user_uid: "{{ getent_passwd[target_user][1] }}"
+
+    - name: Install packages
+      ansible.builtin.apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Enable PipeWire user units globally
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        scope: global
+        enabled: true
+      loop:
+        - pipewire.socket
+        - pipewire-pulse.socket
+        - wireplumber.service
+
+    - name: Create portal config directory
+      ansible.builtin.file:
+        path: "{{ user_home }}/.config/xdg-desktop-portal"
+        state: directory
+        owner: "{{ target_user }}"
+        mode: "0755"
+
+    - name: Prefer the wlr portal for screenshots and screencasts on sway
+      ansible.builtin.copy:
+        dest: "{{ user_home }}/.config/xdg-desktop-portal/sway-portals.conf"
+        owner: "{{ target_user }}"
+        mode: "0644"
+        content: |
+          [preferred]
+          default=wlr;gtk
+          org.freedesktop.impl.portal.Screenshot=wlr
+          org.freedesktop.impl.portal.ScreenCast=wlr
+
+    - name: Check for a user sway config
+      ansible.builtin.stat:
+        path: "{{ user_home }}/.config/sway/config"
+      register: sway_cfg
+
+    - name: Warn if no user sway config exists
+      ansible.builtin.debug:
+        msg: >-
+          {{ user_home }}/.config/sway/config not found. Copy /etc/sway/config
+          there, then re-run this playbook.
+      when: not sway_cfg.stat.exists
+
+    - name: Export Wayland env to systemd/dbus so portals can start
+      ansible.builtin.lineinfile:
+        path: "{{ user_home }}/.config/sway/config"
+        regexp: '^exec dbus-update-activation-environment'
+        line: "exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=sway SWAYSOCK"
+        insertafter: EOF
+      when: sway_cfg.stat.exists
+
+    - name: Make the flameshot overlay float without borders
+      ansible.builtin.lineinfile:
+        path: "{{ user_home }}/.config/sway/config"
+        regexp: '^for_window \[app_id="flameshot"\]'
+        line: 'for_window [app_id="flameshot"] floating enable, border none, move position 0 0'
+        insertafter: EOF
+      when: sway_cfg.stat.exists
+
+    - name: Fix ownership of sway config (in case lineinfile changed it)
+      ansible.builtin.file:
+        path: "{{ user_home }}/.config/sway/config"
+        owner: "{{ target_user }}"
+      when: sway_cfg.stat.exists
+
+    # Restarting user services needs the user's runtime dir and session bus.
+    # This only works if the user has an active login session.
+    - name: Reset failed portal units and restart PipeWire + portals
+      ansible.builtin.shell: |
+        systemctl --user reset-failed xdg-desktop-portal-wlr xdg-desktop-portal || true
+        systemctl --user restart pipewire pipewire-pulse wireplumber
+        systemctl --user restart xdg-desktop-portal-wlr xdg-desktop-portal
+      become_user: "{{ target_user }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ user_uid }}"
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ user_uid }}/bus"
+      changed_when: true
+      register: restart_result
+      failed_when: false
+
+    - name: Report restart outcome
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Services restarted.' if restart_result.rc == 0 else
+             'Restart failed (no active session?). Log out and back in, then run: systemctl --user restart xdg-desktop-portal-wlr xdg-desktop-portal' }}
+
+    - name: Next steps
+      ansible.builtin.debug:
+        msg:
+          - "Reload sway (Mod+Shift+c) or log out/in so the new env export takes effect."
+          - "Verify: busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop | grep -i screenshot"
+          - "Then run: flameshot gui"
+
+
+    - name: Download flameshot
+      ansible.builtin.unarchive:
+        src: "https://github.com/flameshot-org/flameshot/releases/download/v15.0.0/flameshot-v15.0.0+git0.f4f2e4e-artifact-debian-13-amd64.zip"
+        dest: /tmp/
+        remote_src: true
+        include: [flameshot-15.0.0-1.debian-13.amd64.deb]
+        mode: "0644"
+        creates: /tmp/flameshot-15.0.0-1.debian-13.amd64.deb
+
+    - name: Install flameshot
+      ansible.builtin.apt:
+        deb: /tmp/flameshot-15.0.0-1.debian-13.amd64.deb
+
+    

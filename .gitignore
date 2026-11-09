@@ -1,0 +1,47 @@
+# ==========================================
+# Ansible Specific
+# ==========================================
+# Retry files generated for failed playbook runs
+*.retry
+
+# Project-local Ansible cache and collections/roles temporary data
+.ansible/
+.ansible_cache/
+
+# ==========================================
+# Ansible Lint & Testing
+# ==========================================
+# Cache directories for ansible-lint and molecule testing
+.cache/
+.molecule/
+
+# ==========================================
+# Secrets and Credentials (CRITICAL)
+# ==========================================
+# Keep unencrypted sensitive vault passwords or credentials secure
+*.vault_password
+*vault-pass*
+credentials.yml
+secrets.yml
+
+# ==========================================
+# Environment & Python Caches
+# ==========================================
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local virtual environments
+.venv/
+venv/
+env/
+.env
+
+# ==========================================
+# Editor and OS-specific files
+# ==========================================
+.DS_Store
+.idea/
+.vscode/
+ansible.log
